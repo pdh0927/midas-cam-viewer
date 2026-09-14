@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Midas Cam 라이브 뷰</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #frame { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #bar { position: absolute; left: 0; right: 0; top: 0; padding: 10px 14px;
+    display: flex; gap: 12px; align-items: center; justify-content: space-between;
+    background: linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0)); font-size: 13px; }
+  #fps { font-variant-numeric: tabular-nums; opacity: 0.8; }
+  #app { color: #8cf; text-decoration: none; }
+</style>
+</head>
+<body>
+<img id="frame" alt="" />
+<div id="bar"><span id="status">연결 중…</span><a id="app" href="#">앱으로 열기</a><span id="fps">0 fps</span></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script>
+(function () {
+  var statusEl = document.getElementById("status");
+  var fpsEl = document.getElementById("fps");
+  var frameEl = document.getElementById("frame");
+
+  // Only the 6-char code survives: pasted links sometimes drag extra text into the query.
+  var forceRelay = new URLSearchParams(location.search).get("relay") === "1";
+  var code = (new URLSearchParams(location.search).get("c") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+  if (!code) { statusEl.textContent = "코드가 없습니다 (?c=CODE)"; return; }
+
+  document.getElementById("app").href = "midascam://watch?c=" + encodeURIComponent(code);
+
+  var cfg = window.LIVE_VIEW_CONFIG || {};
+  var client = supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+  var me = Math.random().toString(36).slice(2, 10);
+  var pc = null;
+  // ICE that arrives before setRemoteDescription resolves would be dropped.
+  var pending = [];
+  var joinTimer = null;
+  var joinStartedAt = 0;
+  // The host said `bye` — the session is over, so stop knocking.
+  var ended = false;
+  var openedAt = Date.now();
+  var channel = null;
+  var subAttempts = 0;
+  var subRetry = null;
+
+  // Same knobs as the app viewer (src/lib/liveView.ts).
+  var RTC_CONFIG = {
+    iceServers: [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }],
+    iceCandidatePoolSize: 4
+  };
+  var TURN_TIMEOUT_MS = 3000;
+  var SUB_RETRY_MS = 1000;
+  var SUB_MAX_ATTEMPTS = 5;
+  var DISCONNECT_GRACE_MS = 4000;
+  var JOIN_FAST_MS = 1000;
+  var JOIN_SLOW_MS = 3000;
+  var JOIN_FAST_WINDOW_MS = 15000;
+  var BYE_GRACE_MS = 1500;
+
+  // Short-lived Cloudflare TURN credentials from the Edge Function; on any
+  // failure we run STUN only, which still connects on a shared network.
+  var icePromise = (function () {
+    if (!cfg.supabaseUrl || typeof AbortController === "undefined") {
+      return Promise.resolve(RTC_CONFIG.iceServers);
+    }
+    var abort = new AbortController();
+    var timer = setTimeout(function () { abort.abort(); }, TURN_TIMEOUT_MS);
+    return fetch(cfg.supabaseUrl + "/functions/v1/turn-credentials", {
+      headers: { apikey: cfg.supabaseAnonKey, Authorization: "Bearer " + cfg.supabaseAnonKey },
+      signal: abort.signal
+    }).then(function (r) { return r.json(); }).then(function (b) {
+      if (!b || !b.iceServers || !b.iceServers.length) throw new Error("no iceServers");
+      return b.iceServers;
+    }).catch(function (e) {
+      console.warn("[liveViewer] STUN only —", e);
+      return RTC_CONFIG.iceServers;
+    }).then(function (servers) { clearTimeout(timer); return servers; });
+  })();
+
+  function setStatus(t) { statusEl.textContent = t; }
+
+  function stopJoining() { clearTimeout(joinTimer); joinTimer = null; }
+
+  function startJoining() {
+    // The host may not be live yet (or we lost the peer) — keep knocking.
+    if (joinTimer || ended) return;
+    joinStartedAt = Date.now();
+    (function knock() {
+      if (ended) return;
+      send({ type: "join" });
+      var fast = Date.now() - joinStartedAt < JOIN_FAST_WINDOW_MS;
+      joinTimer = setTimeout(knock, fast ? JOIN_FAST_MS : JOIN_SLOW_MS);
+    })();
+  }
+
+  /** The host may still be live — drop this peer and knock again. */
+  function retry(self) {
+    if (pc !== self || ended) return;
+    closePeer();
+    setStatus("연결 중…");
+    startJoining();
+  }
+
+  /** Drop the current peer; its own close event must not report a status. */
+  function closePeer() {
+    var old = pc;
+    pc = null;
+    pending = [];
+    if (old) { try { old.close(); } catch (e) {} }
+  }
+
+  var received = 0;
+  setInterval(function () { fpsEl.textContent = received + " fps"; received = 0; }, 1000);
+
+  function send(msg) {
+    msg.from = me;
+    if (channel) channel.send({ type: "broadcast", event: "signal", payload: msg });
+  }
+
+  function subscribe() {
+    var ch = client.channel("live:" + code);
+    channel = ch;
+    ch.on("broadcast", { event: "signal" }, function (e) {
+      var sig = e.payload;
+      if (!sig || sig.from === me) return;
+      if (sig.to && sig.to !== me) return;
+      if (sig.type === "bye" && sig.from === "host") {
+        ended = true;
+        stopJoining();
+        closePeer();
+        setStatus("종료됨");
+      }
+      else if (sig.type === "offer") { if (!ended) void onOffer(sig.data); }
+      else if (sig.type === "ice") {
+        if (pc && pc.remoteDescription) pc.addIceCandidate(sig.data).catch(function () {});
+        else pending.push(sig.data);
+      }
+    });
+    ch.subscribe(function (s) {
+      if (channel !== ch) return; // a channel we already replaced
+      if (s === "SUBSCRIBED") { subAttempts = 0; startJoining(); }
+      else if (s === "CHANNEL_ERROR" || s === "TIMED_OUT" || s === "CLOSED") resubscribe();
+    });
+  }
+
+  /** A dead signaling socket looks exactly like "host isn't live" — rebuild it. */
+  function resubscribe() {
+    if (ended || subRetry) return;
+    stopJoining();
+    if (subAttempts >= SUB_MAX_ATTEMPTS) { setStatus("종료됨"); return; }
+    subAttempts++;
+    var ch = channel;
+    channel = null;
+    if (ch) client.removeChannel(ch);
+    subRetry = setTimeout(function () { subRetry = null; subscribe(); }, SUB_RETRY_MS);
+  }
+
+  subscribe();
+
+  async function onOffer(offer) {
+    var iceServers = await icePromise;
+    if (ended) return;
+    closePeer();
+    var self = new RTCPeerConnection({
+      iceServers: iceServers,
+      iceCandidatePoolSize: RTC_CONFIG.iceCandidatePoolSize,
+      // Dev aid: ?relay=1 forces the TURN path so the relay setup can be
+      // verified from the same Wi-Fi (where direct would otherwise win).
+      iceTransportPolicy: forceRelay ? "relay" : "all"
+    });
+    pc = self;
+    self.onicecandidate = function (e) {
+      if (e.candidate) send({ to: "host", type: "ice", data: e.candidate.toJSON() });
+    };
+    self.onconnectionstatechange = function () {
+      if (pc !== self) return; // a peer we already replaced
+      if (self.connectionState === "connected") {
+        var secs = ((Date.now() - openedAt) / 1000).toFixed(1);
+        console.log("[liveViewer] connected in " + (Date.now() - openedAt) + " ms");
+        setStatus("시청 중 (" + secs + "s)");
+        setTimeout(function () { if (pc === self) setStatus("시청 중"); }, 3000);
+        stopJoining();
+      }
+      else if (self.connectionState === "failed") { retry(self); }
+      else if (self.connectionState === "disconnected") {
+        // ICE often heals itself; only give up if it hasn't come back.
+        setTimeout(function () {
+          if (pc === self && self.connectionState !== "connected") retry(self);
+        }, DISCONNECT_GRACE_MS);
+      }
+      else if (self.connectionState === "closed") { setStatus("종료됨"); }
+    };
+    self.ondatachannel = function (e) {
+      e.channel.onmessage = function (m) {
+        received++;
+        frameEl.src = "data:image/jpeg;base64," + m.data;
+      };
+      // The host dropped us (or restarted); it may well offer again.
+      // A close beats the host's `bye` broadcast by a few hundred ms; wait for it
+      // so a deliberate stop reads "종료됨" instead of an endless "연결 중…".
+      e.channel.onclose = function () { setTimeout(function () { retry(self); }, BYE_GRACE_MS); };
+    };
+    await self.setRemoteDescription(offer);
+    while (pending.length) await self.addIceCandidate(pending.shift()).catch(function () {});
+    var answer = await self.createAnswer();
+    await self.setLocalDescription(answer);
+    send({ to: "host", type: "answer", data: { type: answer.type, sdp: answer.sdp } });
+  }
+})();
+</script>
+</body>
+</html>
