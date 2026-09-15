@@ -44,6 +44,8 @@
   var joinStartedAt = 0;
   // The host said `bye` — the session is over, so stop knocking.
   var ended = false;
+  // `bye` arrived while connected; confirmed when the data channel closes.
+  var byePending = false;
   var openedAt = Date.now();
   var channel = null;
   var subAttempts = 0;
@@ -107,6 +109,13 @@
     startJoining();
   }
 
+  function endSession() {
+    ended = true;
+    stopJoining();
+    closePeer();
+    setStatus("종료됨");
+  }
+
   /** Drop the current peer; its own close event must not report a status. */
   function closePeer() {
     var old = pc;
@@ -131,10 +140,10 @@
       if (!sig || sig.from === me) return;
       if (sig.to && sig.to !== me) return;
       if (sig.type === "bye" && sig.from === "host") {
-        ended = true;
-        stopJoining();
-        closePeer();
-        setStatus("종료됨");
+        // Any viewer holding the code could forge this. While our channel to
+        // the host is up, believe it only once that channel actually drops.
+        if (pc && pc.connectionState === "connected") byePending = true;
+        else endSession();
       }
       else if (sig.type === "offer") { if (!ended) void onOffer(sig.data); }
       else if (sig.type === "ice") {
@@ -204,7 +213,10 @@
       // The host dropped us (or restarted); it may well offer again.
       // A close beats the host's `bye` broadcast by a few hundred ms; wait for it
       // so a deliberate stop reads "종료됨" instead of an endless "연결 중…".
-      e.channel.onclose = function () { setTimeout(function () { retry(self); }, BYE_GRACE_MS); };
+      e.channel.onclose = function () {
+        if (byePending) { endSession(); return; }
+        setTimeout(function () { retry(self); }, BYE_GRACE_MS);
+      };
     };
     await self.setRemoteDescription(offer);
     while (pending.length) await self.addIceCandidate(pending.shift()).catch(function () {});

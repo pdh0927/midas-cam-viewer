@@ -1,0 +1,10 @@
+# Cloudflare Pages response headers for the hosted viewer (copy to the
+# midas-cam-viewer repo alongside index.html). The page is one inline script,
+# so script-src needs 'unsafe-inline'; everything else is locked to the hosts
+# it actually talks to.
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src https://ojfjkegmqfigdteuzuqu.supabase.co wss://ojfjkegmqfigdteuzuqu.supabase.co; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
