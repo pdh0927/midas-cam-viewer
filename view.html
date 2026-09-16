@@ -12,12 +12,11 @@
     display: flex; gap: 12px; align-items: center; justify-content: space-between;
     background: linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0)); font-size: 13px; }
   #fps { font-variant-numeric: tabular-nums; opacity: 0.8; }
-  #app { color: #8cf; text-decoration: none; }
 </style>
 </head>
 <body>
 <img id="frame" alt="" />
-<div id="bar"><span id="status">연결 중…</span><a id="app" href="#">앱으로 열기</a><span id="fps">0 fps</span></div>
+<div id="bar"><span id="status">연결 중…</span><span id="fps">0 fps</span></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.1"></script>
 <script src="config.js"></script>
@@ -31,8 +30,6 @@
   var forceRelay = new URLSearchParams(location.search).get("relay") === "1";
   var code = (new URLSearchParams(location.search).get("c") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
   if (!code) { statusEl.textContent = "코드가 없습니다 (?c=CODE)"; return; }
-
-  document.getElementById("app").href = "midascam://watch?c=" + encodeURIComponent(code);
 
   var cfg = window.LIVE_VIEW_CONFIG || {};
   var client = supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
