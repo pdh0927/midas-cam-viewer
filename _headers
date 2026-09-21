@@ -8,3 +8,7 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+# iOS refuses an AASA that isn't served as JSON, and the file has no extension.
+/.well-known/apple-app-site-association
+  Content-Type: application/json

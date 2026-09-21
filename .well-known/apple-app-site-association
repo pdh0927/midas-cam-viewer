@@ -1,0 +1,16 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["4568VT5GD7.com.midascam.app"],
+        "components": [
+          {
+            "/": "/",
+            "?": { "c": "?*" },
+            "comment": "live view links only (https://midascam.pages.dev/?c=CODE); a bare visit stays in the browser"
+          }
+        ]
+      }
+    ]
+  }
+}
