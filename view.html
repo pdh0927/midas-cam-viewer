@@ -3,13 +3,18 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Midas Cam 감독 모드</title>
+<title>Midas Cam</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; color: #fff;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   #stage { position: absolute; inset: 0; transition: opacity 0.2s; }
   /* Not connected: a frozen frame must not read as live. */
   #stage.stale { opacity: 0.25; }
+  #dbg { position: fixed; left: 8px; bottom: 8px; z-index: 9; display: flex; gap: 8px;
+         align-items: center; font: 12px -apple-system, sans-serif; color: #fff;
+         background: rgba(0,0,0,.6); padding: 6px 8px; border-radius: 8px; }
+  #dbg button { font: 12px -apple-system, sans-serif; padding: 6px 10px; border: 0;
+                border-radius: 6px; background: #fff; color: #000; }
   .frame { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
     opacity: 0; }
   #bar { position: absolute; left: 0; right: 0; top: 0; padding: 10px 14px;
@@ -20,21 +25,71 @@
 </head>
 <body>
 <div id="stage"><img class="frame" alt="" /><img class="frame" alt="" /></div>
-<div id="bar"><span id="status">연결 중…</span><span id="fps">0 fps</span></div>
+<div id="bar"><span id="status">…</span><span id="fps">0 fps</span></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.1"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.1" integrity="sha384-fx4y4cDx8NYfissnVzdGJY3yVXWY3rn5ab5HTUjpvgT35oDiyAbjjqnLhnRmESNE" crossorigin="anonymous"></script>
 <script src="config.js"></script>
 <script>
 (function () {
+  // Viewer's language from the browser; English when we don't have it.
+  var STRINGS = {
+    "ko": { title: "Midas Cam 감독 모드", connecting: "연결 중…", ended: "종료됨", watching: "시청 중", watchingFor: "시청 중 ({s}s)", giveUp: "연결 안 됨 · 새로고침해 주세요", save: "이 화면 저장", noCode: "코드가 없습니다 (?c=CODE)" },
+    "en": { title: "Midas Cam Director Mode", connecting: "Connecting…", ended: "Ended", watching: "Watching", watchingFor: "Watching ({s}s)", giveUp: "Couldn't connect · Please refresh", save: "Save this frame", noCode: "No code (?c=CODE)" },
+    "hi": { title: "Midas Cam डायरेक्टर मोड", connecting: "कनेक्ट हो रहा है…", ended: "समाप्त", watching: "देख रहे हैं", watchingFor: "देख रहे हैं ({s}s)", giveUp: "कनेक्ट नहीं हुआ · कृपया रीफ़्रेश करें", save: "यह फ़्रेम सेव करें", noCode: "कोड नहीं है (?c=CODE)" },
+    "ja": { title: "Midas Cam 監督モード", connecting: "接続中…", ended: "終了しました", watching: "視聴中", watchingFor: "視聴中 ({s}s)", giveUp: "接続できません · 再読み込みしてください", save: "この画面を保存", noCode: "コードがありません (?c=CODE)" },
+    "zh-Hans": { title: "Midas Cam 导演模式", connecting: "连接中…", ended: "已结束", watching: "观看中", watchingFor: "观看中 ({s}s)", giveUp: "无法连接 · 请刷新页面", save: "保存此画面", noCode: "缺少代码 (?c=CODE)" },
+    "zh-Hant": { title: "Midas Cam 導演模式", connecting: "連線中…", ended: "已結束", watching: "觀看中", watchingFor: "觀看中 ({s}s)", giveUp: "無法連線 · 請重新整理", save: "儲存此畫面", noCode: "缺少代碼 (?c=CODE)" },
+    "es": { title: "Midas Cam modo director", connecting: "Conectando…", ended: "Finalizado", watching: "Viendo", watchingFor: "Viendo ({s}s)", giveUp: "No se pudo conectar · Recarga la página", save: "Guardar esta imagen", noCode: "Falta el código (?c=CODE)" },
+    "pt-BR": { title: "Midas Cam modo diretor", connecting: "Conectando…", ended: "Encerrado", watching: "Assistindo", watchingFor: "Assistindo ({s}s)", giveUp: "Não foi possível conectar · Atualize a página", save: "Salvar esta imagem", noCode: "Código ausente (?c=CODE)" },
+    "id": { title: "Midas Cam Mode Sutradara", connecting: "Menghubungkan…", ended: "Selesai", watching: "Menonton", watchingFor: "Menonton ({s}s)", giveUp: "Gagal terhubung · Muat ulang halaman", save: "Simpan gambar ini", noCode: "Tidak ada kode (?c=CODE)" },
+    "th": { title: "Midas Cam โหมดผู้กำกับ", connecting: "กำลังเชื่อมต่อ…", ended: "สิ้นสุดแล้ว", watching: "กำลังดู", watchingFor: "กำลังดู ({s}s)", giveUp: "เชื่อมต่อไม่ได้ · โปรดรีเฟรช", save: "บันทึกภาพนี้", noCode: "ไม่มีรหัส (?c=CODE)" },
+    "vi": { title: "Midas Cam chế độ đạo diễn", connecting: "Đang kết nối…", ended: "Đã kết thúc", watching: "Đang xem", watchingFor: "Đang xem ({s}s)", giveUp: "Không kết nối được · Vui lòng tải lại", save: "Lưu khung hình này", noCode: "Thiếu mã (?c=CODE)" },
+    "de": { title: "Midas Cam Regiemodus", connecting: "Verbinde…", ended: "Beendet", watching: "Live", watchingFor: "Live ({s}s)", giveUp: "Keine Verbindung · Bitte neu laden", save: "Dieses Bild speichern", noCode: "Kein Code (?c=CODE)" },
+    "fr": { title: "Midas Cam mode réalisateur", connecting: "Connexion…", ended: "Terminé", watching: "En direct", watchingFor: "En direct ({s}s)", giveUp: "Connexion impossible · Actualisez la page", save: "Enregistrer cette image", noCode: "Code manquant (?c=CODE)" }
+  };
+
+  // First browser language we have wins; zh splits by script, pt is pt-BR.
+  function pick(langs) {
+    for (var i = 0; i < langs.length; i++) {
+      var t = String(langs[i]).toLowerCase();
+      var base = t.split("-")[0];
+      if (base === "zh") return /hant|-tw|-hk|-mo/.test(t) ? "zh-Hant" : "zh-Hans";
+      if (base === "pt") return "pt-BR";
+      if (STRINGS[base]) return base;
+    }
+    return "en";
+  }
+
+  function fmt(str, vars) {
+    return str.replace(/\{(\w+)\}/g, function (m, k) { return k in vars ? vars[k] : m; });
+  }
+
+  var locale = pick(navigator.languages || [navigator.language || "en"]);
+  var S = STRINGS[locale];
+  document.documentElement.lang = locale;
+  document.title = S.title;
+
   var statusEl = document.getElementById("status");
+  statusEl.textContent = S.connecting;
   var fpsEl = document.getElementById("fps");
   var stageEl = document.getElementById("stage");
   var bufs = document.querySelectorAll(".frame");
   var front = 0;
 
+  // ?debug=1 — for chasing the "image splits in half and the halves swap" report.
+  // The decisive question is WHICH SIDE breaks it, and saving the received JPEG
+  // answers it: if the saved file is scrambled the host encoded it that way, if
+  // it is clean the damage happened while rendering here.
+  var debug = new URLSearchParams(location.search).get("debug") === "1";
+  // No-op in the hot path unless ?debug=1 replaces it, so showFrame stays free
+  // of debug branches (and stays testable on its own).
+  var onShown = function () {};
+
   // Assigning .src straight from the wire lets the compositor paint a
   // half-decoded frame over the previous one — the picture tears into bands.
-  // Decode into the back buffer, then swap; `onload` fires only when it is whole.
+  // Decode into the back buffer, then swap. NOTE: `onload` does NOT prove the
+  // JPEG was complete — browsers happily fire it for a truncated image — so it
+  // guards against a half-PAINTED frame, not against half-received bytes.
   function showFrame(b64) {
     var back = bufs[1 - front];
     back.onload = function () {
@@ -42,14 +97,38 @@
       back.style.opacity = 1;
       front = 1 - front;
       stageEl.classList.remove("stale");
+      onShown(back, b64);
     };
     back.src = "data:image/jpeg;base64," + b64;
+  }
+
+  if (debug) {
+    var box = document.createElement("div");
+    box.id = "dbg";
+    var dbgEl = document.createElement("span");
+    var saveEl = document.createElement("button");
+    var lastB64 = null;
+    saveEl.textContent = S.save;
+    saveEl.onclick = function () {
+      if (!lastB64) return;
+      var a = document.createElement("a");
+      a.href = "data:image/jpeg;base64," + lastB64;
+      a.download = "midascam-frame-" + Date.now() + ".jpg";
+      a.click();
+    };
+    box.appendChild(dbgEl);
+    box.appendChild(saveEl);
+    document.body.appendChild(box);
+    onShown = function (img, b64) {
+      lastB64 = b64;
+      dbgEl.textContent = img.naturalWidth + "x" + img.naturalHeight + " · " + Math.round(b64.length / 1024) + "KB";
+    };
   }
 
   // Only the 6-char code survives: pasted links sometimes drag extra text into the query.
   var forceRelay = new URLSearchParams(location.search).get("relay") === "1";
   var code = (new URLSearchParams(location.search).get("c") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
-  if (!code) { statusEl.textContent = "코드가 없습니다 (?c=CODE)"; return; }
+  if (!code) { statusEl.textContent = S.noCode; return; }
 
   var cfg = window.LIVE_VIEW_CONFIG || {};
   var client = supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
@@ -73,7 +152,9 @@
     iceServers: [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }],
     iceCandidatePoolSize: 4
   };
-  var TURN_TIMEOUT_MS = 3000;
+  // Edge Function cold start is ~1.4 s and its Free-tier Postgres can add
+  // seconds; timing out loses TURN, and LTE<->LTE then can't connect at all.
+  var TURN_TIMEOUT_MS = 6000;
   var SUB_RETRY_MS = 1000;
   var SUB_MAX_ATTEMPTS = 5;
   var DISCONNECT_GRACE_MS = 4000;
@@ -81,6 +162,8 @@
   var JOIN_SLOW_MS = 3000;
   var JOIN_FAST_WINDOW_MS = 15000;
   var BYE_GRACE_MS = 1500;
+  // A link opened early or left in a tab must not knock (and hold a socket) forever.
+  var JOIN_GIVE_UP_MS = 10 * 60 * 1000;
 
   // Short-lived Cloudflare TURN credentials from the Edge Function; on any
   // failure we run STUN only, which still connects on a shared network.
@@ -112,6 +195,7 @@
     joinStartedAt = Date.now();
     (function knock() {
       if (ended) return;
+      if (Date.now() - joinStartedAt > JOIN_GIVE_UP_MS) { endSession(S.giveUp); return; }
       send({ type: "join" });
       var fast = Date.now() - joinStartedAt < JOIN_FAST_WINDOW_MS;
       joinTimer = setTimeout(knock, fast ? JOIN_FAST_MS : JOIN_SLOW_MS);
@@ -123,16 +207,20 @@
     if (pc !== self || ended) return;
     closePeer();
     stageEl.classList.add("stale");
-    setStatus("연결 중…");
+    setStatus(S.connecting);
     startJoining();
   }
 
-  function endSession() {
+  function endSession(msg) {
     ended = true;
     stopJoining();
     closePeer();
+    // Null first so the CLOSED callback hits the `channel !== ch` guard.
+    var ch = channel;
+    channel = null;
+    if (ch) client.removeChannel(ch);
     stageEl.classList.add("stale");
-    setStatus("종료됨");
+    setStatus(msg || S.ended);
   }
 
   /** Drop the current peer; its own close event must not report a status. */
@@ -164,6 +252,8 @@
         if (pc && pc.connectionState === "connected") byePending = true;
         else endSession();
       }
+      // Only the host may steer this viewer; any code holder can broadcast here.
+      else if (sig.from !== "host") return;
       else if (sig.type === "offer") { if (!ended) void onOffer(sig.data); }
       else if (sig.type === "ice") {
         if (pc && pc.remoteDescription) pc.addIceCandidate(sig.data).catch(function () {});
@@ -181,7 +271,7 @@
   function resubscribe() {
     if (ended || subRetry) return;
     stopJoining();
-    if (subAttempts >= SUB_MAX_ATTEMPTS) { setStatus("종료됨"); return; }
+    if (subAttempts >= SUB_MAX_ATTEMPTS) { setStatus(S.ended); return; }
     subAttempts++;
     var ch = channel;
     channel = null;
@@ -211,8 +301,8 @@
       if (self.connectionState === "connected") {
         var secs = ((Date.now() - openedAt) / 1000).toFixed(1);
         console.log("[liveViewer] connected in " + (Date.now() - openedAt) + " ms");
-        setStatus("시청 중 (" + secs + "s)");
-        setTimeout(function () { if (pc === self) setStatus("시청 중"); }, 3000);
+        setStatus(fmt(S.watchingFor, { s: secs }));
+        setTimeout(function () { if (pc === self) setStatus(S.watching); }, 3000);
         stopJoining();
       }
       else if (self.connectionState === "failed") { retry(self); }
@@ -222,7 +312,7 @@
           if (pc === self && self.connectionState !== "connected") retry(self);
         }, DISCONNECT_GRACE_MS);
       }
-      else if (self.connectionState === "closed") { setStatus("종료됨"); }
+      else if (self.connectionState === "closed") { setStatus(S.ended); }
     };
     self.ondatachannel = function (e) {
       e.channel.onmessage = function (m) {
